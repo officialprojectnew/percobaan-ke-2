@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <title>Migrasi Database CBT ke Firebase</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 p-10 font-sans">
+  <div class="max-w-3xl mx-auto bg-white p-8 rounded-xl shadow-md text-center">
+    <h1 class="text-3xl font-bold text-blue-600 mb-2">Alat Migrasi Database CBT</h1>
+    <p class="text-gray-600 mb-6">Upload file Backup JSON Anda untuk mentransfer data Siswa, Guru, dan Soal ke Firebase.</p>
+    
+    <input type="file" id="fileJson" accept=".json" class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 mb-4 border p-2 rounded">
+    
+    <button id="btnProses" class="w-full bg-blue-600 text-white font-bold py-3 rounded-lg hover:bg-blue-700 transition">
+      Mulai Migrasi Data
+    </button>
+
+    <div id="logArea" class="mt-6 text-left bg-gray-900 text-green-400 p-4 rounded h-64 overflow-y-auto text-sm font-mono hidden">
+      <!-- Log migrasi akan muncul di sini -->
+    </div>
+  </div>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
+    import { getAuth, createUserWithEmailAndPassword } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-auth.js";
+    import { getFirestore, doc, setDoc } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
+
+    // ==========================================
+    // PASTE FIREBASE CONFIG ANDA DI BAWAH INI
+    // ==========================================
+      const firebaseConfig = {
+        apiKey: "AIzaSyA31kG55rU8kU-hU-9YTMOdwtG-c8oHCbE",
+        authDomain: "cbt-sekolah-4081e.firebaseapp.com",
+        projectId: "cbt-sekolah-4081e",
+        storageBucket: "cbt-sekolah-4081e.firebasestorage.app",
+        messagingSenderId: "368744876228",
+        appId: "1:368744876228:web:b4adf08e091a9c858ae191"
+      };
+
+    // Inisialisasi Firebase Utama (Untuk Firestore)
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+
+    // Inisialisasi Firebase Sekunder (Khusus untuk Create User agar Admin tidak ter-logout)
+    const secondaryApp = initializeApp(firebaseConfig, "SecondaryApp");
+    const secondaryAuth = getAuth(secondaryApp);
+
+    const logArea = document.getElementById('logArea');
+    function tulisLog(pesan) {
+      logArea.classList.remove('hidden');
+      logArea.innerHTML += `<div>> ${pesan}</div>`;
+      logArea.scrollTop = logArea.scrollHeight;
+    }
+
+    document.getElementById('btnProses').addEventListener('click', () => {
+      const fileInput = document.getElementById('fileJson');
+      if (fileInput.files.length === 0) return alert("Pilih file JSON dulu!");
+      
+      const reader = new FileReader();
+      reader.onload = async function(e) {
+        try {
+          const data = JSON.parse(e.target.result);
+          document.getElementById('btnProses').disabled = true;
+          document.getElementById('btnProses').innerText = "Sedang Memproses... Jangan Tutup Tab Ini!";
+          
+          await prosesMigrasi(data);
+          
+          document.getElementById('btnProses').innerText = "Migrasi Selesai!";
+          tulisLog("MIGRASI SELESAI 100%!");
+        } catch (err) {
+          alert("Gagal membaca file JSON. Pastikan file valid.");
+          console.error(err);
+        }
+      };
+      reader.readAsText(fileInput.files[0]);
+    });
+
+    async function prosesMigrasi(dataDB) {
+      // 1. MIGRASI DATA SISWA
+      if (dataDB["Siswa"] && dataDB["Siswa"].length > 1) {
+        tulisLog("--- MEMULAI MIGRASI SISWA ---");
+        const listSiswa = dataDB["Siswa"];
+        for (let i = 1; i < listSiswa.length; i++) { // Lewati baris 0 (header)
+          const row = listSiswa[i];
+          const nis = row[0] ? row[0].toString() : "";
+          const nama = row[1];
+          const nisn = row[2] ? row[2].toString() : "";
+          const kelas = row[3];
+          const password = row[4] ? row[4].toString() : "123456";
+          const foto = row[5] || "";
+
+          if(!nis) continue;
+
+          try {
+            // A. Buat Akun Login di Auth (NISN sebagai username, dengan @cbt.com)
+            // Prioritaskan NISN untuk login. Jika kosong, gunakan NIS.
+            const usernameLogin = nisn ? nisn : nis;
+            const emailSiswa = `${usernameLogin}@cbt.com`;
+            
+            try {
+               await createUserWithEmailAndPassword(secondaryAuth, emailSiswa, password);
+            } catch(authErr) {
+               // Jika error karena email sudah terdaftar, abaikan dan lanjut simpan data
+               if(authErr.code !== 'auth/email-already-in-use') throw authErr;
+            }
+
+            // B. Simpan Data ke Firestore Database
+            await setDoc(doc(db, "Users", usernameLogin), {
+              nis: nis,
+              nama: nama,
+              nisn: nisn,
+              kelas: kelas,
+              password: password,
+              foto: foto,
+              role: "siswa"
+            });
+            tulisLog(`[Siswa] Sukses: ${nama} (${usernameLogin})`);
+          } catch (e) {
+            tulisLog(`[Siswa] Error pada ${nama}: ${e.message}`);
+          }
+        }
+      }
+
+      // 2. MIGRASI DATA GURU
+      if (dataDB["Guru"] && dataDB["Guru"].length > 1) {
+        tulisLog("--- MEMULAI MIGRASI GURU ---");
+        const listGuru = dataDB["Guru"];
+        for (let i = 1; i < listGuru.length; i++) {
+          const row = listGuru[i];
+          const nip = row[0] ? row[0].toString() : "";
+          const nama = row[1];
+          const username = row[2] ? row[2].toString() : "";
+          const password = row[3] ? row[3].toString() : "123456";
+          const foto = row[4] || "";
+
+          if(!username) continue;
+
+          try {
+            const emailGuru = `${username}@cbt.com`;
+            try {
+               await createUserWithEmailAndPassword(secondaryAuth, emailGuru, password);
+            } catch(authErr) {
+               if(authErr.code !== 'auth/email-already-in-use') throw authErr;
+            }
+
+            await setDoc(doc(db, "Users", username), {
+              nip: nip,
+              nama: nama,
+              username: username,
+              password: password,
+              foto: foto,
+              role: "guru"
+            });
+            tulisLog(`[Guru] Sukses: ${nama} (${username})`);
+          } catch (e) {
+            tulisLog(`[Guru] Error pada ${nama}: ${e.message}`);
+          }
+        }
+      }
+
+      // 3. MIGRASI MANAJEMEN UJIAN (HEADER PAKET SOAL)
+      if (dataDB["Manajemen_Ujian"] && dataDB["Manajemen_Ujian"].length > 1) {
+        tulisLog("--- MEMULAI MIGRASI MANAJEMEN UJIAN ---");
+        const listUjian = dataDB["Manajemen_Ujian"];
+        for (let i = 1; i < listUjian.length; i++) {
+          const row = listUjian[i];
+          const kode = row[0];
+          if(!kode) continue;
+          try {
+            await setDoc(doc(db, "Manajemen_Ujian", kode), {
+              kode: kode,
+              mapel: row[1],
+              kelas: row[2],
+              waktu: row[4],
+              id_guru: row[5],
+              status: row[6] || "Nonaktif",
+              token: row[7] || ""
+            });
+            tulisLog(`[Ujian] Sukses Paket: ${kode}`);
+          } catch (e) { tulisLog(`[Ujian] Error Paket ${kode}: ${e.message}`); }
+        }
+      }
+
+      // 4. MIGRASI BANK SOAL
+      if (dataDB["Bank_Soal"] && dataDB["Bank_Soal"].length > 1) {
+        tulisLog("--- MEMULAI MIGRASI BANK SOAL ---");
+        const listSoal = dataDB["Bank_Soal"];
+        for (let i = 1; i < listSoal.length; i++) {
+          const row = listSoal[i];
+          const kodeUjian = row[0];
+          if(!kodeUjian) continue;
+          
+          try {
+            // Menyimpan sebagai sub-koleksi di bawah Manajemen_Ujian
+            // Format ID Soal: KodeUjian_BarisKe-X
+            const idSoal = `${kodeUjian}_No_${i}`;
+            await setDoc(doc(db, "Bank_Soal", idSoal), {
+              kode_soal: kodeUjian,
+              id_guru: row[1],
+              tipe: row[2],
+              pertanyaan: row[3],
+              gambar: row[4],
+              opsi_a: row[5],
+              opsi_b: row[6],
+              opsi_c: row[7],
+              opsi_d: row[8],
+              kunci: row[9],
+              bobot: row[10]
+            });
+            tulisLog(`[Soal] Sukses Input Soal ke Paket: ${kodeUjian}`);
+          } catch (e) { tulisLog(`[Soal] Error: ${e.message}`); }
+        }
+      }
+    }
+  </script>
+</body>
+</html>
